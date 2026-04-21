@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f6f8fb;
+  --foreground: #0f172a;
+  --brand: #1e7fd6;
+  --brand-dark: #1766ac;
+  --teal: #14b8a6;
+}
+
+html,
+body {
+  height: 100%;
+  background: var(--background);
+  color: var(--foreground);
+  -webkit-tap-highlight-color: transparent;
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Mobile-first container */
+.container-mobile {
+  width: 100%;
+  max-width: 480px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+@media (min-width: 768px) {
+  .container-mobile {
+    max-width: 560px;
+  }
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+/* Disable animations as requested */
+*,
+*::before,
+*::after {
+  transition: none !important;
+  animation: none !important;
+}
+
+/* Helper gradients */
+.hero-gradient {
+  background:
+    radial-gradient(
+      1200px 300px at 50% -10%,
+      rgba(30, 127, 214, 0.18),
+      transparent 60%
+    ),
+    linear-gradient(180deg, #ffffff, #f6f8fb);
+}
