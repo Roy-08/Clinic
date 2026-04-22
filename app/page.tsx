@@ -38,25 +38,7 @@ export default async function Home() {
           </Link>
         </p>
 
-        <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-4">
-          <div className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-            Staff login
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <Link
-              href="/login/admin"
-              className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 py-3 text-sm font-semibold text-slate-700"
-            >
-              🏥 Clinic Admin
-            </Link>
-            <Link
-              href="/login/main"
-              className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 py-3 text-sm font-semibold text-slate-700"
-            >
-              🔬 Main Lab
-            </Link>
-          </div>
-        </div>
+       
 
         <p className="mt-8 text-center text-[11px] text-slate-400">
           © {new Date().getFullYear()} MediCare Clinic. All tests, reports &amp;
