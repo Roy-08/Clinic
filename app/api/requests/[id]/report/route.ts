@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { getRequest, updateRequest } from "@/lib/sheets";
-
-const MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+import {
+  getRequest,
+  updateRequest,
+  storeReportData,
+  retrieveReportData,
+} from "@/lib/sheets";
 
 export async function POST(
   req: Request,
@@ -31,35 +34,24 @@ export async function POST(
   if (!file) {
     return NextResponse.json({ error: "File is required" }, { status: 400 });
   }
-  if (file.size > MAX_BYTES) {
-    return NextResponse.json(
-      { error: "File too large (max 5MB)" },
-      { status: 400 }
-    );
-  }
-  const allowed = [
-    "application/pdf",
-    "image/png",
-    "image/jpeg",
-    "image/jpg",
-  ];
-  if (!allowed.includes(file.type)) {
-    return NextResponse.json(
-      { error: "Only PDF / PNG / JPG allowed" },
-      { status: 400 }
-    );
-  }
+
+  // No file size limit — any size is accepted
+  // No file type restriction — any document type is accepted
 
   const buf = Buffer.from(await file.arrayBuffer());
   const base64 = buf.toString("base64");
-  const dataUrl = `data:${file.type};base64,${base64}`;
+  const mimeType = file.type || "application/octet-stream";
+  const fullDataUrl = `data:${mimeType};base64,${base64}`;
+
+  // Store report data with automatic chunking for large files
+  const storedValue = await storeReportData(id, fullDataUrl);
 
   const updated = await updateRequest(id, {
     status: "report_ready",
     reportReadyAt: new Date().toISOString(),
-    reportDataUrl: dataUrl,
+    reportDataUrl: storedValue,
     reportFileName: file.name,
-    reportMime: file.type,
+    reportMime: mimeType,
     labNotes,
   });
 
@@ -92,11 +84,21 @@ export async function GET(
     }
   }
 
-  const [, meta] = r.reportDataUrl.split(",");
-  const header = r.reportDataUrl.split(",")[0];
-  const mime = r.reportMime || header.match(/data:(.*?);/)?.[1] || "application/pdf";
+  // Retrieve the full data URL (reassembles chunks if needed)
+  const fullDataUrl = await retrieveReportData(id, r.reportDataUrl);
+  if (!fullDataUrl) {
+    return NextResponse.json(
+      { error: "Report data not found" },
+      { status: 404 }
+    );
+  }
+
+  const [, meta] = fullDataUrl.split(",");
+  const header = fullDataUrl.split(",")[0];
+  const mime =
+    r.reportMime || header.match(/data:(.*?);/)?.[1] || "application/octet-stream";
   const buf = Buffer.from(meta, "base64");
-  const safeName = (r.reportFileName || `report-${r.id}.pdf`).replace(
+  const safeName = (r.reportFileName || `report-${r.id}`).replace(
     /[^a-zA-Z0-9._-]/g,
     "_"
   );
