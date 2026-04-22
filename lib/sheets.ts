@@ -19,6 +19,7 @@ const SHEETS_ENABLED = Boolean(SHEET_ID && SA_EMAIL && SA_KEY_RAW);
 const USERS_SHEET = "Users";
 const TESTS_SHEET = "Tests";
 const REQUESTS_SHEET = "Requests";
+const REPORT_CHUNKS_SHEET = "ReportChunks";
 
 const USERS_HEADERS = [
   "id",
@@ -57,12 +58,23 @@ const REQUESTS_HEADERS = [
   "reportMime",
   "labNotes",
 ];
+const REPORT_CHUNKS_HEADERS = [
+  "requestId",
+  "chunkIndex",
+  "chunkData",
+];
+
+// Max characters per Google Sheets cell (leave some buffer)
+const CHUNK_SIZE = 40000;
+// Marker prefix stored in reportDataUrl when data is chunked
+const CHUNKED_MARKER = "chunked:";
 
 // ---------------- In-memory fallback store ----------------
 type MemStore = {
   users: UserRecord[];
   tests: TestItem[];
   requests: LabRequest[];
+  reportChunks: Map<string, string[]>; // requestId -> chunks
   initialized: boolean;
 };
 
@@ -72,6 +84,7 @@ if (!g.__medicareMem) {
     users: [],
     tests: [...DEFAULT_TESTS],
     requests: [],
+    reportChunks: new Map(),
     initialized: true,
   };
 }
@@ -127,6 +140,7 @@ async function initSheets() {
     await ensureSheet(USERS_SHEET, USERS_HEADERS);
     await ensureSheet(TESTS_SHEET, TESTS_HEADERS);
     await ensureSheet(REQUESTS_SHEET, REQUESTS_HEADERS);
+    await ensureSheet(REPORT_CHUNKS_SHEET, REPORT_CHUNKS_HEADERS);
     // Seed tests if empty
     const existing = await readRows(TESTS_SHEET);
     if (existing.length === 0) {
@@ -167,6 +181,15 @@ async function appendRow(sheet: string, row: (string | number)[]) {
   });
 }
 
+async function appendRows(sheet: string, rows: (string | number)[][]) {
+  await getClient().spreadsheets.values.append({
+    spreadsheetId: SHEET_ID!,
+    range: `${sheet}!A1`,
+    valueInputOption: "RAW",
+    requestBody: { values: rows.map((row) => row.map((v) => String(v ?? ""))) },
+  });
+}
+
 async function updateRowById(
   sheet: string,
   headers: string[],
@@ -197,6 +220,136 @@ function rowToObj<T>(headers: string[], row: string[]): T {
     obj[h] = row[i] ?? "";
   });
   return obj as T;
+}
+
+// ---------------- Report Chunk Helpers ----------------
+
+/**
+ * Store report data, chunking it if it exceeds the Google Sheets cell limit.
+ * Returns the value to store in the reportDataUrl column.
+ */
+export async function storeReportData(
+  requestId: string,
+  dataUrl: string
+): Promise<string> {
+  if (!SHEETS_ENABLED) {
+    // In-memory: store directly, no limit
+    mem.reportChunks.set(requestId, [dataUrl]);
+    return dataUrl;
+  }
+
+  await initSheets();
+
+  // If the data fits in a single cell, store it directly
+  if (dataUrl.length <= CHUNK_SIZE) {
+    return dataUrl;
+  }
+
+  // Data is too large — chunk it
+  // First, delete any existing chunks for this request
+  await deleteReportChunks(requestId);
+
+  // Split into chunks
+  const chunks: string[] = [];
+  for (let i = 0; i < dataUrl.length; i += CHUNK_SIZE) {
+    chunks.push(dataUrl.substring(i, i + CHUNK_SIZE));
+  }
+
+  // Append all chunks as rows
+  const chunkRows = chunks.map((chunk, index) => [
+    requestId,
+    String(index),
+    chunk,
+  ]);
+  await appendRows(REPORT_CHUNKS_SHEET, chunkRows);
+
+  // Return a marker indicating the data is chunked
+  return `${CHUNKED_MARKER}${chunks.length}`;
+}
+
+/**
+ * Retrieve report data, reassembling chunks if necessary.
+ */
+export async function retrieveReportData(
+  requestId: string,
+  reportDataUrl: string | undefined
+): Promise<string | undefined> {
+  if (!reportDataUrl) return undefined;
+
+  if (!SHEETS_ENABLED) {
+    // In-memory: check chunks map first
+    const chunks = mem.reportChunks.get(requestId);
+    if (chunks && chunks.length > 0) return chunks.join("");
+    return reportDataUrl;
+  }
+
+  // If it's not chunked, return as-is
+  if (!reportDataUrl.startsWith(CHUNKED_MARKER)) {
+    return reportDataUrl;
+  }
+
+  await initSheets();
+
+  // Read all chunk rows and filter by requestId
+  const allRows = await readRows(REPORT_CHUNKS_SHEET);
+  const chunkRows = allRows
+    .filter((r) => r[0] === requestId)
+    .sort((a, b) => Number(a[1]) - Number(b[1]));
+
+  if (chunkRows.length === 0) return undefined;
+
+  // Reassemble the data
+  return chunkRows.map((r) => r[2] || "").join("");
+}
+
+/**
+ * Delete existing report chunks for a request (used when replacing a report).
+ */
+async function deleteReportChunks(requestId: string): Promise<void> {
+  if (!SHEETS_ENABLED) {
+    mem.reportChunks.delete(requestId);
+    return;
+  }
+
+  await initSheets();
+
+  const allRows = await readRows(REPORT_CHUNKS_SHEET);
+  // Find row indices (0-based from data rows) that match this requestId
+  const indicesToDelete: number[] = [];
+  allRows.forEach((r, i) => {
+    if (r[0] === requestId) indicesToDelete.push(i);
+  });
+
+  if (indicesToDelete.length === 0) return;
+
+  // Get the sheet ID for batch update
+  const sheets = getClient();
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID! });
+  const chunkSheet = meta.data.sheets?.find(
+    (s) => s.properties?.title === REPORT_CHUNKS_SHEET
+  );
+  if (!chunkSheet?.properties?.sheetId && chunkSheet?.properties?.sheetId !== 0)
+    return;
+  const sheetId = chunkSheet.properties.sheetId;
+
+  // Delete rows from bottom to top to maintain correct indices
+  const deleteRequests = indicesToDelete
+    .sort((a, b) => b - a)
+    .map((idx) => ({
+      deleteDimension: {
+        range: {
+          sheetId,
+          dimension: "ROWS",
+          startIndex: idx + 1, // +1 for header row
+          endIndex: idx + 2,
+        },
+      },
+    }));
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SHEET_ID!,
+    requestBody: { requests: deleteRequests },
+  });
 }
 
 // ---------------- Public API ----------------
